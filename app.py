@@ -9,18 +9,16 @@ import certifi
 st.set_page_config(page_title="MT5 Cloud Terminal", page_icon="🌐", layout="wide")
 
 # --- BROKER SERVER DATA ---
-# This acts as your "Searchable" database for the user
 COMMON_SERVERS = [
-    "MetaQuotes-Demo", "ICMarkets-Demo", "ICMarkets-Live", "Pepperstone-MT5-Live",
-    "Exness-MT5-Real", "XMGlobal-MT5", "FBS-Real", "FTMO-Server", "Tickmill-Live",
-    "Vantage-Live", "Hantec-Live", "Custom (Type below)"
+    "MetaQuotes-Demo", "NextFunded-Server", "NextFunded-Demo", "ICMarkets-Demo", 
+    "ICMarkets-Live", "Pepperstone-MT5-Live", "Exness-MT5-Real", "XMGlobal-MT5", 
+    "FTMO-Server", "Custom (Type below)"
 ]
 
 # 2. Database Connection
 @st.cache_resource
 def get_database():
     try:
-        # Pull from Secrets
         uri = st.secrets["MONGO_URI"]
         client = MongoClient(uri, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=5000)
         client.admin.command('ping')
@@ -39,24 +37,17 @@ if "logged_in_user" not in st.session_state:
 st.sidebar.header("🔐 MT5 Access Control")
 
 if not st.session_state.logged_in_user:
-    # Use a Form to prevent the app from refreshing every time you type a letter
     with st.sidebar.form("login_panel"):
         login_id = st.text_input("MT5 Account Number", placeholder="e.g. 5123456")
         login_pass = st.text_input("MT5 Password", type="password")
-        
-        # SEARCH BAR: Using selectbox with search enabled by default in Streamlit
         selected_server = st.selectbox("Search Broker Server", options=COMMON_SERVERS)
-        
-        # Logic for Custom Server
-        custom_server = st.text_input("If 'Custom', type server name here:", placeholder="e.g. MyBroker-Live-01")
+        custom_server = st.text_input("If 'Custom', type server name here:", placeholder="e.g. NextFunded-Server")
         
         submit_button = st.form_submit_button("Connect Account")
         
         if submit_button:
             if login_id and login_pass:
-                # Determine which server name to use
                 final_server = custom_server if selected_server == "Custom (Type below)" else selected_server
-                
                 if db is not None:
                     db['UserStates'].update_one(
                         {"user_id": login_id},
@@ -71,7 +62,7 @@ if not st.session_state.logged_in_user:
                     st.session_state.logged_in_user = login_id
                     st.rerun()
                 else:
-                    st.error("Database connection failed. Please check your MONGO_URI.")
+                    st.error("Database connection failed.")
             else:
                 st.warning("Please enter both ID and Password.")
 else:
@@ -88,7 +79,6 @@ if st.session_state.logged_in_user and db is not None:
 # 6. Main Dashboard UI
 st.title("📊 Universal MT5 Multi-Monitor")
 
-# Values (Defaults to 0.00 if not logged in)
 balance = user_data.get('balance', 0.00) if user_data else 0.00
 equity = user_data.get('equity', 0.00) if user_data else 0.00
 profit = user_data.get('profit', 0.00) if user_data else 0.00
@@ -96,7 +86,7 @@ profit = user_data.get('profit', 0.00) if user_data else 0.00
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Account Balance", f"${balance:,.2f}")
 col2.metric("Current Equity", f"${equity:,.2f}", f"{profit:,.2f}")
-col3.metric("Status", "ONLINE" if user_data else "OFFLINE")
+col3.metric("Status", user_data.get('connection_status', 'OFFLINE') if user_data else "OFFLINE")
 col4.metric("User ID", st.session_state.logged_in_user if st.session_state.logged_in_user else "N/A")
 
 # --- GAUGE ---
@@ -114,23 +104,44 @@ fig = go.Figure(go.Indicator(
 fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"}, height=350)
 st.plotly_chart(fig, use_container_width=True)
 
-# 7. Sidebar Strategy Settings
+# 7. Sidebar Strategy Settings (UPDATED WITH ALL SYMBOLS)
 if st.session_state.logged_in_user and user_data:
     st.sidebar.divider()
     st.sidebar.header("⚙️ Strategy Settings")
     
-    catalog = user_data.get("mt5_catalog", ["EURUSD", "GBPUSD"])
-    active = user_data.get("active_symbols", [])
+    # FETCH SYMBOLS FROM BOT DATA
+    catalog = user_data.get("mt5_catalog", [])
     
-    selected = st.sidebar.multiselect("Trade Symbols", options=catalog, default=active)
-    risk = st.sidebar.slider("Risk Level (%)", 0.1, 5.0, 1.0)
+    if not catalog:
+        st.sidebar.warning("⏳ Waiting for Bot to upload symbols...")
+        display_options = ["EURUSD", "GBPUSD", "XAUUSD"] # Fallback while loading
+    else:
+        st.sidebar.success(f"✅ {len(catalog)} Symbols Loaded")
+        display_options = sorted(catalog)
+
+    active_symbols = user_data.get("active_symbols", [])
     
-    if st.sidebar.button("Save Strategy"):
+    # MULTISELECT
+    selected = st.sidebar.multiselect(
+        "Trade Symbols", 
+        options=display_options, 
+        default=[s for s in active_symbols if s in display_options]
+    )
+    
+    # Persistence for Risk slider
+    saved_risk = float(user_data.get("risk_value", 1.0))
+    risk = st.sidebar.slider("Risk Level (%)", 0.1, 10.0, saved_risk)
+    
+    if st.sidebar.button("Save & Sync Strategy"):
         db['UserStates'].update_one(
             {"user_id": st.session_state.logged_in_user},
-            {"$set": {"active_symbols": selected, "risk_value": risk}}
+            {"$set": {
+                "active_symbols": selected, 
+                "risk_value": risk,
+                "request_sync": True
+            }}
         )
-        st.sidebar.success("Settings Syncing...")
+        st.sidebar.success("Settings Syncing to MT5... 📡")
 
 # Auto-refresh
 if st.session_state.logged_in_user:
