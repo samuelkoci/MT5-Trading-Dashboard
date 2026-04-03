@@ -4,7 +4,7 @@ import time
 import plotly.graph_objects as go
 from pymongo import MongoClient
 import certifi
-from cryptography.fernet import Fernet # New: For security
+from cryptography.fernet import Fernet
 
 # 1. Page Config
 st.set_page_config(page_title="MT5 Cloud Terminal", page_icon="🌐", layout="wide")
@@ -16,37 +16,44 @@ COMMON_SERVERS = [
     "FTMO-Server", "Custom (Type below)"
 ]
 
-# 2. Database Connection & Encryption Setup
+# 2. Database Connection Function
 @st.cache_resource
 def get_database():
     try:
-        # Check if the secret exists first
         if "MONGO_URI" not in st.secrets:
             st.error("❌ 'MONGO_URI' not found in Streamlit Secrets!")
             return None
             
         uri = st.secrets["MONGO_URI"]
-        
-        # Use a longer timeout so it doesn't give up too fast
         client = MongoClient(
             uri, 
             tlsCAFile=certifi.where(), 
             serverSelectionTimeoutMS=5000
         )
-        
-        # Trigger a quick check
+        # Test connection
         client.admin.command('ping')
         return client['TradingSaaS']
-        
     except Exception as e:
         st.error(f"🔌 Connection Error: {e}")
         return None
 
-# Initialize the Cipher Suite using your Secret Key
+# --- INITIALIZE DB ---
+db = get_database()
+
+# Initialize the Cipher Suite
+cipher_suite = None
 try:
-    cipher_suite = Fernet(st.secrets["ENCRYPTION_KEY"])
+    if "ENCRYPTION_KEY" in st.secrets:
+        cipher_suite = Fernet(st.secrets["ENCRYPTION_KEY"])
+    else:
+        st.error("🔐 Encryption Key missing in Streamlit Secrets.")
 except Exception as e:
-    st.error("🔐 Encryption Key missing or invalid in Streamlit Secrets.")
+    st.error(f"🔐 Invalid Encryption Key: {e}")
+
+# 🛑 SAFETY GATE: Stop if DB is offline
+if db is None:
+    st.warning("Please check your MongoDB URI and Network Access (IP Whitelist).")
+    st.stop()
 
 # 3. Session Management
 if "logged_in_user" not in st.session_state:
@@ -65,29 +72,27 @@ if not st.session_state.logged_in_user:
         submit_button = st.form_submit_button("Connect Account")
         
         if submit_button:
-            if login_id and login_pass:
+            if login_id and login_pass and cipher_suite:
                 # --- ENCRYPTION LOGIC ---
-                # We scramble the password before saving to the cloud
                 password_bytes = login_pass.encode()
                 encrypted_pw = cipher_suite.encrypt(password_bytes).decode()
                 
                 final_server = custom_server if selected_server == "Custom (Type below)" else selected_server
                 
-                if db is not None:
-                    db['UserStates'].update_one(
-                        {"user_id": login_id},
-                        {"$set": {
-                            "mt5_login": login_id,
-                            "mt5_pass": encrypted_pw, # Saved as encrypted string
-                            "mt5_server": final_server,
-                            "request_sync": True 
-                        }},
-                        upsert=True
-                    )
-                    st.session_state.logged_in_user = login_id
-                    st.rerun()
-                else:
-                    st.error("Database connection failed.")
+                db['UserStates'].update_one(
+                    {"user_id": login_id},
+                    {"$set": {
+                        "mt5_login": login_id,
+                        "mt5_pass": encrypted_pw,
+                        "mt5_server": final_server,
+                        "request_sync": True 
+                    }},
+                    upsert=True
+                )
+                st.session_state.logged_in_user = login_id
+                st.rerun()
+            elif not cipher_suite:
+                st.error("Cannot encrypt password. Check ENCRYPTION_KEY.")
             else:
                 st.warning("Please enter both ID and Password.")
 else:
@@ -98,7 +103,7 @@ else:
 
 # 5. Load Data
 user_data = None
-if st.session_state.logged_in_user and db is not None:
+if st.session_state.logged_in_user:
     user_data = db['UserStates'].find_one({"user_id": st.session_state.logged_in_user})
 
 # 6. Main Dashboard UI
@@ -138,7 +143,6 @@ if st.session_state.logged_in_user and user_data:
     st.sidebar.divider()
     st.sidebar.header("⚙️ Strategy Settings")
     
-    # Dynamic catalog pushed by your local bot
     catalog = user_data.get("mt5_catalog", [])
     
     if not catalog:
