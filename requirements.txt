@@ -3,3 +3,5 @@ pymongo
 certifi
 plotly
 pandas
+cryptography
+python-dotenv
