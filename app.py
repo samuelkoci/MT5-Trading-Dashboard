@@ -20,15 +20,27 @@ COMMON_SERVERS = [
 @st.cache_resource
 def get_database():
     try:
+        # Check if the secret exists first
+        if "MONGO_URI" not in st.secrets:
+            st.error("❌ 'MONGO_URI' not found in Streamlit Secrets!")
+            return None
+            
         uri = st.secrets["MONGO_URI"]
-        client = MongoClient(uri, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=5000)
+        
+        # Use a longer timeout so it doesn't give up too fast
+        client = MongoClient(
+            uri, 
+            tlsCAFile=certifi.where(), 
+            serverSelectionTimeoutMS=5000
+        )
+        
+        # Trigger a quick check
         client.admin.command('ping')
         return client['TradingSaaS']
+        
     except Exception as e:
-        st.error(f"🔌 Database Offline: {e}")
+        st.error(f"🔌 Connection Error: {e}")
         return None
-
-db = get_database()
 
 # Initialize the Cipher Suite using your Secret Key
 try:
