@@ -9,8 +9,18 @@ from cryptography.fernet import Fernet
 # 1. Page Config
 st.set_page_config(page_title="MT5 Cloud Terminal", page_icon="🌐", layout="wide")
 
+# --- MASTER SYMBOL WHITELIST ---
+# Your curated list of professional assets
+GLOBAL_WHITELIST = [
+    "UKOUSD", "USOUSD", "XAGUSD", "XAUUSD", "XPTUSD", 
+    "AUDCAD", "AUDCHF", "AUDJPY", "AUDUSD", "EURAUD", 
+    "EURCAD", "EURCHF", "EURGBP", "EURJPY", "EURUSD", 
+    "GBPUSD", "USDCAD", "USDCHF", "USDJPY", "GER30", 
+    "EUSTX50", "FRA40", "HK50", "SPX500", "UK100", 
+    "BTCUSD", "ETHUSD"
+]
+
 # --- BROKER SERVER DATA ---
-# Updated to include your specific prop firm servers for easier selection
 COMMON_SERVERS = [
     "MetaQuotes-Demo", "FundedNext-Server", "FundedNext-Server2", "FundedNext-Server3", 
     "ICMarkets-Demo", "ICMarkets-Live", "Pepperstone-MT5-Live", "Exness-MT5-Real", 
@@ -24,22 +34,14 @@ def get_database():
         if "MONGO_URI" not in st.secrets:
             st.error("❌ 'MONGO_URI' not found in Streamlit Secrets!")
             return None
-            
-        # .strip() handles hidden spaces that cause "key=value" errors
         uri = st.secrets["MONGO_URI"].strip() 
-        client = MongoClient(
-            uri, 
-            tlsCAFile=certifi.where(), 
-            serverSelectionTimeoutMS=5000
-        )
-        # Test connection
+        client = MongoClient(uri, tlsCAFile=certifi.where(), serverSelectionTimeoutMS=5000)
         client.admin.command('ping')
         return client['TradingSaaS']
     except Exception as e:
         st.error(f"🔌 Connection Error: {e}")
         return None
 
-# --- INITIALIZE DB ---
 db = get_database()
 
 # Initialize the Cipher Suite
@@ -52,7 +54,6 @@ try:
 except Exception as e:
     st.error(f"🔐 Invalid Encryption Key: {e}")
 
-# 🛑 SAFETY GATE: Stop if DB is offline
 if db is None:
     st.warning("Please check your MongoDB URI and Network Access (IP Whitelist).")
     st.stop()
@@ -75,10 +76,8 @@ if not st.session_state.logged_in_user:
         
         if submit_button:
             if login_id and login_pass and cipher_suite:
-                # --- ENCRYPTION LOGIC ---
                 password_bytes = login_pass.encode()
                 encrypted_pw = cipher_suite.encrypt(password_bytes).decode()
-                
                 final_server = custom_server if selected_server == "Custom (Type below)" else selected_server
                 
                 db['UserStates'].update_one(
@@ -93,10 +92,6 @@ if not st.session_state.logged_in_user:
                 )
                 st.session_state.logged_in_user = login_id
                 st.rerun()
-            elif not cipher_suite:
-                st.error("Cannot encrypt password. Check ENCRYPTION_KEY.")
-            else:
-                st.warning("Please enter both ID and Password.")
 else:
     st.sidebar.success(f"Connected: {st.session_state.logged_in_user}")
     if st.sidebar.button("Logout"):
@@ -140,28 +135,37 @@ fig = go.Figure(go.Indicator(
 fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"}, height=350)
 st.plotly_chart(fig, use_container_width=True)
 
-# 7. Sidebar Strategy Settings
+# --- 7. STRATEGY SETTINGS (SMART FILTERING) ---
 if st.session_state.logged_in_user and user_data:
     st.sidebar.divider()
     st.sidebar.header("⚙️ Strategy Settings")
     
-    catalog = user_data.get("mt5_catalog", [])
+    # Logic: Cross-reference Whitelist with User's Broker Catalog
+    broker_catalog = user_data.get("mt5_catalog", [])
     
-    if not catalog:
-        st.sidebar.warning("⏳ Waiting for Bot to upload symbols...")
-        display_options = ["EURUSD", "GBPUSD", "XAUUSD"]
+    if not broker_catalog:
+        st.sidebar.warning("⏳ Syncing Broker Catalog...")
+        display_options = ["EURUSD", "GBPUSD", "XAUUSD"] # Default safe fallback
     else:
-        st.sidebar.success(f"✅ {len(catalog)} Symbols Loaded")
-        display_options = sorted(catalog)
+        # Filter: Only show symbols present in BOTH our Whitelist and the Broker's catalog
+        display_options = [s for s in GLOBAL_WHITELIST if s in broker_catalog]
+        unsupported = [s for s in GLOBAL_WHITELIST if s not in broker_catalog]
 
     active_symbols = user_data.get("active_symbols", [])
     
     selected = st.sidebar.multiselect(
         "Trade Symbols", 
         options=display_options, 
-        default=[s for s in active_symbols if s in display_options]
+        default=[s for s in active_symbols if s in display_options],
+        help="Only symbols supported by your current broker server are shown."
     )
     
+    # Show Greyed-out/Blocked Symbols in an expander for transparency
+    if broker_catalog and unsupported:
+        with st.sidebar.expander("🚫 Unsupported by your Broker"):
+            st.caption("The following curated symbols are not available on your specific server:")
+            st.write(", ".join(unsupported))
+
     saved_risk = float(user_data.get("risk_value", 1.0))
     risk = st.sidebar.slider("Risk Level (%)", 0.1, 10.0, saved_risk)
     
@@ -174,10 +178,9 @@ if st.session_state.logged_in_user and user_data:
                 "request_sync": True
             }}
         )
-        st.sidebar.success("Settings Syncing to MT5... 📡")
+        st.sidebar.success("Settings Synced! 📡")
 
 # --- AUTO REFRESH ---
-# Reduced to 5 seconds for a more "Live" feel
 if st.session_state.logged_in_user:
     time.sleep(5)
     st.rerun()
