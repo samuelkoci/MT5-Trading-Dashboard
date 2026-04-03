@@ -10,10 +10,11 @@ from cryptography.fernet import Fernet
 st.set_page_config(page_title="MT5 Cloud Terminal", page_icon="🌐", layout="wide")
 
 # --- BROKER SERVER DATA ---
+# Updated to include your specific prop firm servers for easier selection
 COMMON_SERVERS = [
-    "MetaQuotes-Demo", "NextFunded-Server", "NextFunded-Demo", "ICMarkets-Demo", 
-    "ICMarkets-Live", "Pepperstone-MT5-Live", "Exness-MT5-Real", "XMGlobal-MT5", 
-    "FTMO-Server", "Custom (Type below)"
+    "MetaQuotes-Demo", "FundedNext-Server", "FundedNext-Server2", "FundedNext-Server3", 
+    "ICMarkets-Demo", "ICMarkets-Live", "Pepperstone-MT5-Live", "Exness-MT5-Real", 
+    "XMGlobal-MT5", "FTMO-Server", "Custom (Type below)"
 ]
 
 # 2. Database Connection Function
@@ -24,7 +25,8 @@ def get_database():
             st.error("❌ 'MONGO_URI' not found in Streamlit Secrets!")
             return None
             
-        uri = st.secrets["MONGO_URI"]
+        # .strip() handles hidden spaces that cause "key=value" errors
+        uri = st.secrets["MONGO_URI"].strip() 
         client = MongoClient(
             uri, 
             tlsCAFile=certifi.where(), 
@@ -174,7 +176,8 @@ if st.session_state.logged_in_user and user_data:
         )
         st.sidebar.success("Settings Syncing to MT5... 📡")
 
-# Auto-refresh
+# --- AUTO REFRESH ---
+# Reduced to 5 seconds for a more "Live" feel
 if st.session_state.logged_in_user:
-    time.sleep(10)
+    time.sleep(5)
     st.rerun()
