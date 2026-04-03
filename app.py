@@ -8,28 +8,27 @@ import certifi
 # 1. Page Configuration
 st.set_page_config(page_title="Universal MT5 Multi-Monitor", page_icon="📊", layout="wide")
 
-# 2. Database Connection
-# Replace the MONGO_URI line with st.secrets["MONGO_URI"] when moving to Streamlit Cloud
-MONGO_URI = st.secrets["MONGO_URI"]
-
+# 2. Database Connection Logic
 @st.cache_resource
 def get_database():
     try:
-        # Use the secret directly
+        # Pulling from Streamlit Secrets (Make sure Avioni12 is in the Secrets tab!)
+        uri = st.secrets["MONGO_URI"]
         client = MongoClient(
-            st.secrets["MONGO_URI"], 
+            uri, 
             tlsCAFile=certifi.where(),
-            serverSelectionTimeoutMS=5000,
-            # This ensures we don't use a stale, cached connection
-            connect=True 
+            serverSelectionTimeoutMS=5000
         )
-        # FORCE an authentication check right now
-        client.admin.command('ping') 
+        # Force a connection test
+        client.admin.command('ping')
         return client['TradingSaaS']
     except Exception as e:
-        # This will show us exactly what's wrong on the screen
-        st.error(f"⚠️ MongoDB Auth Error: {e}")
+        st.error(f"🔌 Database Connection Error: {e}")
         return None
+
+# --- INITIALIZE DB ---
+db = get_database()
+user_data = None  # Default state
 
 # 3. Sidebar: User & Strategy Settings
 st.sidebar.header("👤 User Account")
@@ -43,22 +42,19 @@ if db is not None:
     st.sidebar.header("⚙️ Strategy Control")
 
     if user_data and "mt5_catalog" in user_data:
-        # Dynamic Symbol Selection from your actual MT5 terminal
         catalog = user_data["mt5_catalog"]
         current_active = user_data.get("active_symbols", [])
         
         selected_symbols = st.sidebar.multiselect(
             "Active Symbols", 
             options=catalog, 
-            default=current_active if current_active else catalog[:3]
+            default=current_active if current_active else (catalog[:3] if catalog else [])
         )
 
-        # Risk Management
         st.sidebar.subheader("Risk Management")
         risk_type = st.sidebar.selectbox("Risk Mode", ["Dynamic (Lots per $1k)", "Fixed Dollars", "Fixed Lots"])
         risk_value = st.sidebar.number_input("Risk Value", value=0.05, step=0.01)
 
-        # Apply Settings
         if st.sidebar.button("💾 Apply & Sync to MT5"):
             new_config = {
                 "symbols": selected_symbols,
@@ -67,7 +63,8 @@ if db is not None:
             }
             collection.update_one(
                 {"user_id": user_id},
-                {"$set": {"new_settings": new_config}}
+                {"$set": {"new_settings": new_config}},
+                upsert=True
             )
             st.sidebar.success("Settings pushed to Cloud! 📡")
     else:
@@ -75,40 +72,40 @@ if db is not None:
 
 # 4. Main Dashboard UI
 st.title("📊 Universal MT5 Multi-Monitor")
+
 if db is not None and user_data:
-    st.markdown(f"**Live Feed for:** `{user_id}` | *Last Heartbeat: {user_data.get('last_update', 'N/A')}*")
+    st.markdown(f"**Live Feed for:** `{user_id}` | *Last Update: {user_data.get('last_update', 'N/A')}*")
     st.divider()
 
-    # --- ROW 1: Key Metrics ---
+    # --- ROW 1: Metrics ---
     col1, col2, col3, col4 = st.columns(4)
-    p_color = "normal" if user_data.get('profit', 0) >= 0 else "inverse"
+    balance = user_data.get('balance', 0)
+    equity = user_data.get('equity', 0)
+    profit = user_data.get('profit', 0)
     
-    col1.metric("Account Balance", f"${user_data.get('balance', 0):,.2f}")
-    col2.metric("Current Equity", f"${user_data.get('equity', 0):,.2f}", f"{user_data.get('profit', 0):,.2f}", delta_color=p_color)
-    col3.metric("Symbols Selected", len(user_data.get("active_symbols", [])))
+    col1.metric("Account Balance", f"${balance:,.2f}")
+    col2.metric("Current Equity", f"${equity:,.2f}", f"{profit:,.2f}")
+    col3.metric("Symbols Active", len(user_data.get("active_symbols", [])))
     col4.metric("Currency", user_data.get("currency", "USD"))
 
     # --- ROW 2: Equity Gauge ---
     st.subheader("Account Health")
     fig = go.Figure(go.Indicator(
         mode = "gauge+number",
-        value = user_data.get('equity', 0),
-        domain = {'x': [0, 1], 'y': [0, 1]},
+        value = equity,
         gauge = {
-            'axis': {'range': [user_data.get('balance', 0)*0.8, user_data.get('balance', 0)*1.2]},
+            'axis': {'range': [balance * 0.8, balance * 1.2]},
             'bar': {'color': "#00ffcc"},
-            'steps': [
-                {'range': [0, user_data.get('balance', 0)], 'color': "#2a2a2a"},
-            ],
-            'threshold': {'line': {'color': "white", 'width': 4}, 'value': user_data.get('balance', 0)}
+            'steps': [{'range': [0, balance], 'color': "#2a2a2a"}],
+            'threshold': {'line': {'color': "white", 'width': 4}, 'value': balance}
         }
     ))
-    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"}, height=400)
+    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"}, height=350)
     st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("👋 Welcome! Please start your MT5 Trading Bot to see live data.")
+    st.info("👋 Welcome! Make sure your MT5 Trading Bot is running locally to see live data.")
 
-# Auto-Refresh
+# Auto-Refresh every 10 seconds
 time.sleep(10)
 st.rerun()
