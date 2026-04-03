@@ -10,7 +10,6 @@ from cryptography.fernet import Fernet
 st.set_page_config(page_title="MT5 Cloud Terminal", page_icon="🌐", layout="wide")
 
 # --- MASTER SYMBOL WHITELIST ---
-# Your curated list of professional assets
 GLOBAL_WHITELIST = [
     "UKOUSD", "USOUSD", "XAGUSD", "XAUUSD", "XPTUSD", 
     "AUDCAD", "AUDCHF", "AUDJPY", "AUDUSD", "EURAUD", 
@@ -44,7 +43,6 @@ def get_database():
 
 db = get_database()
 
-# Initialize the Cipher Suite
 cipher_suite = None
 try:
     if "ENCRYPTION_KEY" in st.secrets:
@@ -61,6 +59,8 @@ if db is None:
 # 3. Session Management
 if "logged_in_user" not in st.session_state:
     st.session_state.logged_in_user = None
+if "sync_success" not in st.session_state:
+    st.session_state.sync_success = False
 
 # 4. Sidebar Login & Controls
 st.sidebar.header("🔐 MT5 Access Control")
@@ -111,8 +111,9 @@ if user_data:
     equity = user_data.get('equity', 0.00)
     profit = user_data.get('profit', 0.00)
     status = user_data.get('connection_status', 'ONLINE')
+    sync_requested = user_data.get('request_sync', False)
 else:
-    balance, equity, profit, status = 0.00, 0.00, 0.00, "OFFLINE"
+    balance, equity, profit, status, sync_requested = 0.00, 0.00, 0.00, "OFFLINE", False
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Account Balance", f"${balance:,.2f}")
@@ -135,19 +136,17 @@ fig = go.Figure(go.Indicator(
 fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"}, height=350)
 st.plotly_chart(fig, use_container_width=True)
 
-# --- 7. STRATEGY SETTINGS (SMART FILTERING) ---
+# --- 7. STRATEGY SETTINGS ---
 if st.session_state.logged_in_user and user_data:
     st.sidebar.divider()
     st.sidebar.header("⚙️ Strategy Settings")
     
-    # Logic: Cross-reference Whitelist with User's Broker Catalog
     broker_catalog = user_data.get("mt5_catalog", [])
     
     if not broker_catalog:
         st.sidebar.warning("⏳ Syncing Broker Catalog...")
-        display_options = ["EURUSD", "GBPUSD", "XAUUSD"] # Default safe fallback
+        display_options = ["EURUSD", "GBPUSD", "XAUUSD"]
     else:
-        # Filter: Only show symbols present in BOTH our Whitelist and the Broker's catalog
         display_options = [s for s in GLOBAL_WHITELIST if s in broker_catalog]
         unsupported = [s for s in GLOBAL_WHITELIST if s not in broker_catalog]
 
@@ -156,19 +155,21 @@ if st.session_state.logged_in_user and user_data:
     selected = st.sidebar.multiselect(
         "Trade Symbols", 
         options=display_options, 
-        default=[s for s in active_symbols if s in display_options],
-        help="Only symbols supported by your current broker server are shown."
+        default=[s for s in active_symbols if s in display_options]
     )
     
-    # Show Greyed-out/Blocked Symbols in an expander for transparency
     if broker_catalog and unsupported:
         with st.sidebar.expander("🚫 Unsupported by your Broker"):
-            st.caption("The following curated symbols are not available on your specific server:")
             st.write(", ".join(unsupported))
 
     saved_risk = float(user_data.get("risk_value", 1.0))
     risk = st.sidebar.slider("Risk Level (%)", 0.1, 10.0, saved_risk)
     
+    # Check if the Bot has finished syncing (flag is False) but we still have a local success message
+    if not sync_requested and st.session_state.sync_success:
+        st.sidebar.success("✅ Bot Synced Successfully!")
+        st.session_state.sync_success = False # Reset for next time
+
     if st.sidebar.button("Save & Sync Strategy"):
         db['UserStates'].update_one(
             {"user_id": st.session_state.logged_in_user},
@@ -178,7 +179,12 @@ if st.session_state.logged_in_user and user_data:
                 "request_sync": True
             }}
         )
-        st.sidebar.success("Settings Synced! 📡")
+        st.session_state.sync_success = True
+        st.rerun() # Immediate rerun to show pending status
+
+    # Show pending status if bot hasn't picked it up yet
+    if sync_requested:
+        st.sidebar.info("📡 Syncing with local Bot...")
 
 # --- AUTO REFRESH ---
 if st.session_state.logged_in_user:

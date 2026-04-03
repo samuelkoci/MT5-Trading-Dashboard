@@ -34,7 +34,6 @@ while True:
             print("⏳ No accounts found in database. Waiting...")
 
         # --- 2. PERSISTENT INITIALIZATION ---
-        # We initialize ONCE per scan loop to check all users
         if not mt5.initialize(path=MT5_PATH, timeout=5000):
             print(f"❌ MT5 Global Init Failed: {mt5.last_error()}")
             time.sleep(10)
@@ -45,6 +44,17 @@ while True:
             server = user.get('mt5_server')
             
             print(f"🔄 Processing: {user_id} | Server: {server}")
+
+            # --- NEW: SYNC ACKNOWLEDGMENT ---
+            # If the user changed settings on the web, detect it here
+            if user.get("request_sync") == True:
+                print(f"📡 SYNC REQUESTED: Updating strategy for {user_id}...")
+                # Here is where you'd update your bot's internal variables
+                # For now, we clear the flag so the web app knows we 'got it'
+                collection.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"request_sync": False}}
+                )
             
             try:
                 # --- 3. DECRYPTION ---
@@ -52,18 +62,15 @@ while True:
                 decrypted_pw = cipher_suite.decrypt(encrypted_pw.encode()).decode()
                 login_id = int(user['mt5_login'])
                 
-                # --- 4. SMART LOGIN (The "No-Boing" Logic) ---
+                # --- 4. SMART LOGIN ---
                 current_account = mt5.account_info()
                 
-                # Check if terminal is already logged into this specific user
                 if current_account is not None and current_account.login == login_id:
-                    print(f"🔗 Already attached to {login_id}. Skipping redundant login.")
+                    print(f"🔗 Already attached to {login_id}. Skipping login.")
                     authorized = True
                 else:
-                    # Switch account only if necessary
                     print(f"🔑 Switching terminal to Account: {login_id}...")
                     authorized = mt5.login(login=login_id, password=decrypted_pw, server=server)
-                    # Give the "Bus" time to settle after a switch
                     time.sleep(3) 
 
             except Exception as e:
@@ -74,7 +81,6 @@ while True:
             if authorized:
                 acc_info = mt5.account_info()
                 if acc_info:
-                    # Optimized symbol fetch to keep IPC pipe clean
                     symbols = mt5.symbols_get(group="*,!*") 
                     if not symbols or len(symbols) < 5:
                         symbols = mt5.symbols_get(group="EUR*,USD*,GBP*,XAU*")
@@ -90,8 +96,9 @@ while True:
                             "currency": acc_info.currency,
                             "mt5_catalog": symbol_list,
                             "last_update": time.strftime("%Y-%m-%d %H:%M:%S"),
-                            "connection_status": "ONLINE",
-                            "request_sync": False
+                            "connection_status": "ONLINE"
+                            # Note: we don't set request_sync: False here anymore 
+                            # because we handled it at the top of the loop.
                         }}
                     )
                     print(f"💰 Account {user_id} Synced. Balance: {acc_info.balance}")
@@ -103,8 +110,6 @@ while True:
                     {"$set": {"connection_status": f"OFFLINE ({error[1]})"}}
                 )
                 
-        # --- 6. SHUTDOWN AFTER ALL USERS PROCESSED ---
-        # We release the terminal once the full scan is done
         mt5.shutdown()
             
     except Exception as e:
