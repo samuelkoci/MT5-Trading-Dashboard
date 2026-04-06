@@ -21,19 +21,17 @@ client = MongoClient(MONGO_URI, tlsCAFile=certifi.where())
 db = client['TradingSaaS']
 collection = db['UserStates']
 
-# --- PATH DEFINITION ---
 MT5_PATH = r"C:\Program Files\MetaTrader 5\terminal64.exe"
 
-print("🚀 MT5 Engine Started (Context-Aware Mode)...")
+print("🚀 MT5 Engine Started (Strategy Enabled)...")
 
 while True:
     try:
         users = list(collection.find({"mt5_login": {"$exists": True}}))
         
         if not users:
-            print("⏳ No accounts found in database. Waiting...")
+            print("⏳ No accounts found. Waiting...")
 
-        # --- 2. PERSISTENT INITIALIZATION ---
         if not mt5.initialize(path=MT5_PATH, timeout=5000):
             print(f"❌ MT5 Global Init Failed: {mt5.last_error()}")
             time.sleep(10)
@@ -42,78 +40,97 @@ while True:
         for user in users:
             user_id = user.get('user_id')
             server = user.get('mt5_server')
+            active_symbols = user.get('active_symbols', []) # Loaded from Dashboard
+            risk_percent = user.get('risk_value', 1.0)      # Loaded from Dashboard
             
             print(f"🔄 Processing: {user_id} | Server: {server}")
 
-            # --- NEW: SYNC ACKNOWLEDGMENT ---
-            # If the user changed settings on the web, detect it here
+            # --- SYNC ACKNOWLEDGMENT ---
             if user.get("request_sync") == True:
-                print(f"📡 SYNC REQUESTED: Updating strategy for {user_id}...")
-                # Here is where you'd update your bot's internal variables
-                # For now, we clear the flag so the web app knows we 'got it'
-                collection.update_one(
-                    {"user_id": user_id},
-                    {"$set": {"request_sync": False}}
-                )
+                print(f"📡 SYNC ACKNOWLEDGED for {user_id}")
+                collection.update_one({"user_id": user_id}, {"$set": {"request_sync": False}})
             
             try:
-                # --- 3. DECRYPTION ---
                 encrypted_pw = user['mt5_pass']
                 decrypted_pw = cipher_suite.decrypt(encrypted_pw.encode()).decode()
                 login_id = int(user['mt5_login'])
                 
-                # --- 4. SMART LOGIN ---
+                # --- SMART LOGIN ---
                 current_account = mt5.account_info()
-                
                 if current_account is not None and current_account.login == login_id:
-                    print(f"🔗 Already attached to {login_id}. Skipping login.")
                     authorized = True
                 else:
-                    print(f"🔑 Switching terminal to Account: {login_id}...")
                     authorized = mt5.login(login=login_id, password=decrypted_pw, server=server)
-                    time.sleep(3) 
+                    time.sleep(2) 
 
             except Exception as e:
                 print(f"🔐 Security Error for {user_id}: {e}")
                 authorized = False
             
-            # --- 5. DATA SYNC ---
+            # --- TRADING & DATA SYNC ---
             if authorized:
                 acc_info = mt5.account_info()
-                if acc_info:
-                    symbols = mt5.symbols_get(group="*,!*") 
-                    if not symbols or len(symbols) < 5:
-                        symbols = mt5.symbols_get(group="EUR*,USD*,GBP*,XAU*")
+                
+                # --- [START] TRADING STRATEGY SECTION ---
+                for symbol in active_symbols:
+                    # 1. Check if we already have a position open for this symbol
+                    positions = mt5.positions_get(symbol=symbol)
                     
-                    symbol_list = sorted([s.name for s in symbols]) if symbols else ["EURUSD"]
+                    if len(positions) == 0: # Only trade if no position is open
+                        print(f"🔍 Analyzing {symbol}...")
+                        
+                        # 2. Get Price Data (Fetch last 100 candles)
+                        rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, 100)
+                        if rates is None: continue
+                        
+                        # Placeholder: Simple "Last close > Previous close" logic
+                        # REPLACE THIS WITH YOUR REAL ALGO
+                        last_close = rates[-1]['close']
+                        prev_close = rates[-2]['close']
+                        
+                        if last_close > prev_close: # TRIGGER CONDITION
+                            print(f"📈 Signal Detected for {symbol}! Sending Order...")
+                            
+                            # 3. Calculate Lot Size (Basic example: 0.01 lot)
+                            lot = 0.01 
+                            price = mt5.symbol_info_tick(symbol).ask
+                            
+                            request = {
+                                "action": mt5.TRADE_ACTION_DEAL,
+                                "symbol": symbol,
+                                "volume": lot,
+                                "type": mt5.ORDER_TYPE_BUY,
+                                "price": price,
+                                "magic": 123456,
+                                "comment": "Bot Trade",
+                                "type_time": mt5.ORDER_TIME_GTC,
+                                "type_filling": mt5.ORDER_FILLING_IOC,
+                            }
+                            
+                            result = mt5.order_send(request)
+                            if result.retcode != mt5.TRADE_RETCODE_DONE:
+                                print(f"❌ Trade Failed: {result.comment}")
+                            else:
+                                print(f"✅ Trade Opened successfully on {symbol}")
 
+                # --- [END] TRADING STRATEGY SECTION ---
+
+                # Update DB with current account state
+                if acc_info:
                     collection.update_one(
                         {"user_id": user_id},
                         {"$set": {
                             "balance": acc_info.balance,
                             "equity": acc_info.equity,
                             "profit": acc_info.profit,
-                            "currency": acc_info.currency,
-                            "mt5_catalog": symbol_list,
-                            "last_update": time.strftime("%Y-%m-%d %H:%M:%S"),
                             "connection_status": "ONLINE"
-                            # Note: we don't set request_sync: False here anymore 
-                            # because we handled it at the top of the loop.
                         }}
                     )
-                    print(f"💰 Account {user_id} Synced. Balance: {acc_info.balance}")
-            else:
-                error = mt5.last_error()
-                print(f"❌ Login Failed for {user_id}. Error: {error}")
-                collection.update_one(
-                    {"user_id": user_id},
-                    {"$set": {"connection_status": f"OFFLINE ({error[1]})"}}
-                )
-                
+
         mt5.shutdown()
             
     except Exception as e:
-        print(f"⚠️ Critical Loop Error: {e}")
+        print(f"⚠️ Critical Error: {e}")
         mt5.shutdown()
         
     print("💤 Scan complete. Waiting 30s...")
