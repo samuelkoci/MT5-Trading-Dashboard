@@ -5,3 +5,4 @@ plotly
 pandas
 cryptography
 python-dotenv
+MetaTrader5
